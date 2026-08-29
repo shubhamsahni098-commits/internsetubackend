@@ -1,0 +1,119 @@
+// InternSetu database schema
+// Two separate identity tables (Student / Company) rather than one polymorphic
+// "User" table, because their fields genuinely differ (education vs industry, etc).
+// A JWT's payload carries { id, role } so the API always knows which table to hit.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum WorkMode {
+  ON_SITE
+  HYBRID
+  REMOTE
+}
+
+enum ApplicationStatus {
+  APPLIED
+  UNDER_REVIEW
+  SHORTLISTED
+  REJECTED
+}
+
+model Student {
+  id       String @id @default(uuid())
+  fullName String
+  email    String @unique
+  phone    String?
+  password String // bcrypt hash, never the plain password
+
+  // Profile (Dashboard/Profile.jsx)
+  location          String?
+  education         String?
+  preferredRole     String?
+  preferredLocation String?
+  skills            Json?   // string[] stored as JSON (MySQL has no native scalar list type)
+  preferences       Json?   // free-form blob for the Preferences page: internshipType, workMode,
+                             // preferredCity, locationPreference, domains[], stipendPreference,
+                             // duration, availability[] - kept as one flexible field rather than
+                             // one column per option since these are just match-filtering hints
+
+  applications Application[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("students")
+}
+
+model Company {
+  id             String  @id @default(uuid())
+  companyName    String
+  officialEmail  String  @unique
+  password       String
+  phone          String?
+  website        String?
+  industry       String?
+  location       String?
+  isVerified     Boolean @default(false)
+
+  internships Internship[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("companies")
+}
+
+model Internship {
+  id          String   @id @default(uuid())
+  title       String
+  description String   @db.Text
+  domain      String
+  skills      Json     // string[] stored as JSON, parsed from the comma-separated form field
+  location    String
+  workMode    WorkMode
+  stipend     String?
+  duration    String
+  eligibility String
+  deadline    DateTime
+  applicationLink String?
+  isActive    Boolean  @default(true)
+
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  companyId String
+
+  applications Application[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([companyId])
+  @@index([domain])
+  @@index([location])
+  @@map("internships")
+}
+
+model Application {
+  id     String            @id @default(uuid())
+  status ApplicationStatus @default(APPLIED)
+
+  student   Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  studentId String
+
+  internship   Internship @relation(fields: [internshipId], references: [id], onDelete: Cascade)
+  internshipId String
+
+  appliedAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // a student can only apply once to a given internship
+  @@unique([studentId, internshipId])
+  @@index([internshipId])
+  @@map("applications")
+}
