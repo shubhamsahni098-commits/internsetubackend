@@ -4,4 +4,7 @@ dist/
 *.log
 .DS_Store
 .env.example
-
+.env
+internsetu_backup.sql
+node_modules/
+dist/
