@@ -10,11 +10,6 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "moduleResolution": "node",
-    "baseUrl": ".",
-    "paths": {
-      "@/*": ["src/*"]
-    },
     "typeRoots": ["./node_modules/@types", "./src/types"]
   },
   "include": ["src/**/*.ts", "prisma/**/*.ts"],
