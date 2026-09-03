@@ -197,7 +197,7 @@ export async function getRecommendations(
   try {
 
     pythonResponse = await fetch(
-      "http://127.0.0.1:8000/recommend",
+      "https://shubhamsahni098-commits--internsetu-recommendation-recom-9ef42d.modal.run/recommend",
       {
         method: "POST",
 
