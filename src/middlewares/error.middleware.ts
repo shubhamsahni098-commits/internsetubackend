@@ -1,7 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import { Prisma } from "@prisma/client";
 import { ApiError } from "../utils/ApiError";
-import { env } from "../config/env";
 
 export function notFoundHandler(req: Request, res: Response) {
   res.status(404).json({
@@ -16,7 +15,7 @@ export function errorHandler(
   res: Response,
   _next: NextFunction
 ) {
-  // Known, intentional errors (ApiError.badRequest(...), etc.)
+  // Known, intentional errors
   if (err instanceof ApiError) {
     return res.status(err.statusCode).json({
       success: false,
@@ -25,26 +24,34 @@ export function errorHandler(
     });
   }
 
-  // Prisma-specific errors get translated into friendly messages
+  // Prisma-specific errors
   if (err instanceof Prisma.PrismaClientKnownRequestError) {
     if (err.code === "P2002") {
       return res.status(409).json({
         success: false,
-        message: `A record with this ${(err.meta?.target as string[])?.join(", ") || "value"} already exists`,
+        message: `A record with this ${
+          (err.meta?.target as string[])?.join(", ") || "value"
+        } already exists`,
       });
     }
+
     if (err.code === "P2025") {
-      return res.status(404).json({ success: false, message: "Record not found" });
+      return res.status(404).json({
+        success: false,
+        message: "Record not found",
+      });
     }
   }
 
-  // Anything unexpected - never leak internals to the client
-  console.error(err);
+  // Unexpected errors - temporary detailed response for debugging
+  console.error("GLOBAL ERROR:", err);
+
   res.status(500).json({
     success: false,
-    message: "Something went wrong on our end",
-    ...(env.nodeEnv === "development" && err instanceof Error
-      ? { stack: err.stack }
-      : {}),
+    message:
+      err instanceof Error
+        ? err.message
+        : "Something went wrong on our end",
+    ...(err instanceof Error ? { stack: err.stack } : {}),
   });
 }
