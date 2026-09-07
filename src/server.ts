@@ -8,8 +8,8 @@ async function main() {
   await prisma.$connect();
   console.log("Connected to MySQL via Prisma");
 
-  app.listen(env.port, () => {
-    console.log(`InternSetu API listening on http://localhost:${env.port}`);
+  app.listen(env.port, "0.0.0.0", () => {
+    console.log(`InternSetu API listening on 0.0.0.0:${env.port}`);
   });
 }
 
@@ -23,6 +23,7 @@ process.on("SIGINT", async () => {
   await prisma.$disconnect();
   process.exit(0);
 });
+
 process.on("SIGTERM", async () => {
   await prisma.$disconnect();
   process.exit(0);
