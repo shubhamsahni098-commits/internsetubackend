@@ -4,7 +4,7 @@ const statusEnum = z.enum(["APPLIED", "UNDER_REVIEW", "SHORTLISTED", "REJECTED"]
 
 export const applyToInternshipSchema = z.object({
   body: z.object({
-    internshipId: z.string().uuid("Invalid internship id"),
+    internshipId: z.string().min(1, "Invalid internship id"),
   }),
 });
 
