@@ -294,10 +294,10 @@ export async function uploadStudentResume(
     // STEP 2: Try PDF.js
     // --------------------------------------------------------
 
-    if (!resumeText.trim()) {
+    if (resumeText.trim().length < 50) {
       try {
         console.log(
-          "pdf-parse returned no text. Trying PDF.js..."
+          "pdf-parse text insufficient. Trying PDF.js..."
         );
 
         resumeText =
@@ -320,10 +320,10 @@ export async function uploadStudentResume(
     // STEP 3: OCR scanned/image PDF
     // --------------------------------------------------------
 
-    if (!resumeText.trim()) {
+    if (resumeText.trim().length < 50) {
       try {
         console.log(
-          "No PDF text found. Starting OCR..."
+          "PDF text insufficient. Starting OCR..."
         );
 
         resumeText =
