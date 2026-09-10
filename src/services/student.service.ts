@@ -473,13 +473,166 @@ export async function uploadStudentResume(
   // Get canonical skills returned by AI
   // ----------------------------------------------------------
 
-  const extractedSkills: string[] =
+  const aiExtractedSkills: string[] =
     Array.isArray(aiData.skills)
       ? aiData.skills.filter(
           (skill: unknown): skill is string =>
             typeof skill === "string"
         )
       : [];
+
+  // Some versions of the recommendation service return the
+  // canonical skills inside matched_skills instead of skills.
+  const aiMatchedSkills: string[] =
+    Array.isArray(aiData.matched_skills)
+      ? aiData.matched_skills.filter(
+          (skill: unknown): skill is string =>
+            typeof skill === "string"
+        )
+      : [];
+
+  // ----------------------------------------------------------
+  // FALLBACK SKILL EXTRACTION
+  //
+  // Do not depend only on the "Skills" heading. A resume may use:
+  // "Technical Skills", "Skills & Tools", "Core Competencies",
+  // or may mention technologies throughout Projects/Experience.
+  //
+  // We therefore match the full extracted resume text against the
+  // same canonical PREDEFINED_SKILLS list used by the frontend.
+  // ----------------------------------------------------------
+
+  const normalizeText = (value: string) =>
+    value
+      .toLowerCase()
+      .replace(/[‐‑‒–—]/g, "-")
+      .replace(/[^\p{L}\p{N}+#./&-]+/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const resumeTextNormalized = normalizeText(resumeText);
+
+  const skillAliases: Record<string, string[]> = {
+    "React.js": ["react", "react js", "reactjs"],
+    "Node.js": ["node", "node js", "nodejs"],
+    "Express.js": ["express", "express js", "expressjs"],
+    "Next.js": ["next", "next js", "nextjs"],
+    "Vue.js": ["vue", "vue js", "vuejs"],
+    "Machine Learning": ["machine learning", "ml"],
+    "Deep Learning": ["deep learning", "dl"],
+    "Artificial intelligence": ["artificial intelligence", "artificial intelligence ai"],
+    "TensorFlow": ["tensorflow"],
+    "Scikit-learn": ["scikit learn", "scikit-learn", "sklearn"],
+    "OpenCV": ["opencv", "open cv"],
+    "C++": ["c++", "cpp"],
+    "C#": ["c#", "c sharp"],
+    "TypeScript": ["typescript", "ts"],
+    "JavaScript": ["javascript", "java script", "js"],
+    "HTML": ["html", "html5"],
+    "CSS": ["css", "css3"],
+    "SQL": ["sql"],
+    "MySQL": ["mysql", "my sql"],
+    "PostgreSQL": ["postgresql", "postgres", "postgre sql"],
+    "MongoDB": ["mongodb", "mongo db", "mongo"],
+    "Power BI": ["power bi", "powerbi"],
+    "MS-Excel": ["excel", "microsoft excel", "ms excel"],
+    "MS-Office": ["ms office", "microsoft office"],
+    "MS-PowerPoint": ["powerpoint", "power point", "ms powerpoint"],
+    "MS-Word": ["ms word", "microsoft word", "word"],
+    "Git": ["git", "github", "gitlab"],
+    "REST API": ["rest api", "restful api", "rest apis"],
+    "NLP": ["nlp", "natural language processing"],
+    "LLM": ["llm", "large language model", "large language models"],
+    "RAG": ["rag", "retrieval augmented generation"],
+    "Hugging Face": ["hugging face", "huggingface"],
+    "Docker": ["docker"],
+    "Kubernetes": ["kubernetes", "k8s"],
+    "AWS": ["aws", "amazon web services"],
+    "Azure": ["azure", "microsoft azure"],
+    "CI/CD": ["ci cd", "cicd", "continuous integration", "continuous deployment"],
+    "OOP": ["oop", "object oriented programming", "object-oriented programming"],
+    "Data Structures": ["data structures", "data structure", "dsa", "data structures and algorithms"],
+    "NumPy": ["numpy", "num py"],
+    "Pandas": ["pandas"],
+    "PyTorch": ["pytorch", "py torch"],
+    "Postman": ["postman"],
+    "Selenium": ["selenium"],
+    "Firebase": ["firebase"],
+    "Flutter": ["flutter"],
+    "Dart": ["dart"],
+    "Java": ["java"],
+    "Python": ["python"],
+    "C": ["c programming", "programming in c", "language c"],
+  };
+
+  const containsSkill = (source: string, candidate: string) => {
+    const normalizedCandidate = normalizeText(candidate);
+
+    if (!normalizedCandidate) return false;
+
+    // Short/ambiguous skills need stricter matching.
+    if (normalizedCandidate === "c") {
+      return /\bc\s*(programming|language)\b/i.test(source);
+    }
+
+    if (normalizedCandidate === "ai") {
+      return /\bai\b/i.test(source);
+    }
+
+    const escaped = normalizedCandidate
+      .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+      .replace(/\s+/g, "\\s+");
+
+    return new RegExp(`(?:^|\\s)${escaped}(?=\\s|$)`, "i").test(source);
+  };
+
+  const fallbackSkills: string[] = [];
+
+  for (const predefinedSkill of PREDEFINED_SKILLS) {
+    const candidates = [
+      predefinedSkill,
+      ...(skillAliases[predefinedSkill] || []),
+    ];
+
+    if (
+      candidates.some((candidate) =>
+        containsSkill(resumeTextNormalized, candidate)
+      )
+    ) {
+      fallbackSkills.push(predefinedSkill);
+    }
+  }
+
+  // Prefer AI results, but never return an empty list when the resume
+  // clearly contains skills from the predefined dataset.
+  const extractedSkills: string[] = [];
+  const seenExtracted = new Set<string>();
+
+  for (const skill of [
+    ...aiExtractedSkills,
+    ...aiMatchedSkills,
+    ...fallbackSkills,
+  ]) {
+    const cleanSkill = skill.trim();
+
+    if (!cleanSkill) continue;
+
+    const normalizedSkill = cleanSkill.toLowerCase();
+
+    if (!seenExtracted.has(normalizedSkill)) {
+      seenExtracted.add(normalizedSkill);
+      extractedSkills.push(cleanSkill);
+    }
+  }
+
+  const skillsSectionFound =
+    aiData.skills_section_found === true ||
+    extractedSkills.length > 0;
+
+  console.log("AI extracted skills:", aiExtractedSkills);
+  console.log("AI matched skills:", aiMatchedSkills);
+  console.log("Fallback matched skills:", fallbackSkills);
+  console.log("Final extracted skills:", extractedSkills);
 
   // ----------------------------------------------------------
   // Merge:
@@ -566,11 +719,11 @@ export async function uploadStudentResume(
 
     skills: mergedSkills,
 
-    skillsSectionFound:
-      aiData.skills_section_found ??
-      false,
+    skillsSectionFound,
 
     matchedSkills:
-      aiData.matched_skills ?? [],
+      Array.isArray(aiData.matched_skills)
+        ? aiData.matched_skills
+        : extractedSkills,
   };
 }
