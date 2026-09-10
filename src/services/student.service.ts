@@ -3,7 +3,12 @@ import { ApiError } from "../utils/ApiError";
 import { Prisma } from "@prisma/client";
 import fs from "fs/promises";
 import path from "path";
+
 import { PDFParse } from "pdf-parse";
+import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.js";
+import { createCanvas } from "@napi-rs/canvas";
+import { createWorker } from "tesseract.js";
+
 import mammoth from "mammoth";
 
 import { PREDEFINED_SKILLS } from "../constants/skills.constants";
@@ -115,6 +120,105 @@ export async function updateStudentPreferences(
 }
 
 // ============================================================
+// PDF TEXT EXTRACTION - PDF.JS
+// ============================================================
+
+async function extractPdfTextWithPdfJs(
+  fileBuffer: Buffer
+): Promise<string> {
+  const loadingTask = pdfjsLib.getDocument({
+    data: new Uint8Array(fileBuffer),
+  });
+
+  const pdf = await loadingTask.promise;
+
+  const pages: string[] = [];
+
+  try {
+    for (
+      let pageNumber = 1;
+      pageNumber <= pdf.numPages;
+      pageNumber++
+    ) {
+      const page = await pdf.getPage(pageNumber);
+
+      const content = await page.getTextContent();
+
+      const pageText = content.items
+        .map((item: any) => {
+          return "str" in item ? item.str : "";
+        })
+        .join(" ");
+
+      pages.push(pageText);
+    }
+  } finally {
+    await pdf.destroy();
+  }
+
+  return pages.join("\n");
+}
+
+// ============================================================
+// PDF OCR EXTRACTION - TESSERACT
+// ============================================================
+
+async function extractPdfTextWithOcr(
+  fileBuffer: Buffer
+): Promise<string> {
+  const loadingTask = pdfjsLib.getDocument({
+    data: new Uint8Array(fileBuffer),
+  });
+
+  const pdf = await loadingTask.promise;
+
+  const worker = await createWorker("eng");
+
+  const pages: string[] = [];
+
+  try {
+    for (
+      let pageNumber = 1;
+      pageNumber <= pdf.numPages;
+      pageNumber++
+    ) {
+      const page = await pdf.getPage(pageNumber);
+
+      // Render PDF page as an image
+      // Higher scale improves OCR accuracy
+      const viewport = page.getViewport({
+        scale: 2,
+      });
+
+      const canvas = createCanvas(
+        Math.ceil(viewport.width),
+        Math.ceil(viewport.height)
+      );
+
+      const context = canvas.getContext("2d");
+
+      await page.render({
+        canvasContext: context as any,
+        viewport,
+      }).promise;
+
+      const imageBuffer = canvas.toBuffer("image/png");
+
+      const result = await worker.recognize(
+        imageBuffer
+      );
+
+      pages.push(result.data.text);
+    }
+  } finally {
+    await worker.terminate();
+    await pdf.destroy();
+  }
+
+  return pages.join("\n");
+}
+
+// ============================================================
 // Resume Upload + Skill Extraction
 // ============================================================
 
@@ -129,14 +233,18 @@ export async function uploadStudentResume(
   file: UploadedResumeFile
 ) {
   if (!file?.path) {
-    throw ApiError.badRequest("Resume file is required");
+    throw ApiError.badRequest(
+      "Resume file is required"
+    );
   }
 
   // ----------------------------------------------------------
   // Validate file extension
   // ----------------------------------------------------------
 
-  const extension = path.extname(file.originalname).toLowerCase();
+  const extension = path
+    .extname(file.originalname)
+    .toLowerCase();
 
   if (![".pdf", ".docx"].includes(extension)) {
     throw ApiError.badRequest(
@@ -150,31 +258,114 @@ export async function uploadStudentResume(
 
   let resumeText = "";
 
+  // ==========================================================
   // PDF
-  if (extension === ".pdf") {
-    const fileBuffer = await fs.readFile(file.path);
+  // ==========================================================
 
-    const parser = new PDFParse({
-      data: fileBuffer,
-    });
+  if (extension === ".pdf") {
+    const fileBuffer = await fs.readFile(
+      file.path
+    );
+
+    // --------------------------------------------------------
+    // STEP 1: Try pdf-parse
+    // --------------------------------------------------------
 
     try {
-      const pdfData = await parser.getText();
+      const parser = new PDFParse({
+        data: fileBuffer,
+      });
 
-      resumeText = pdfData.text || "";
-    } finally {
-      await parser.destroy();
+      try {
+        const pdfData = await parser.getText();
+
+        resumeText = pdfData.text || "";
+      } finally {
+        await parser.destroy();
+      }
+    } catch (error) {
+      console.error(
+        "pdf-parse extraction failed:",
+        error
+      );
+    }
+
+    // --------------------------------------------------------
+    // STEP 2: Try PDF.js
+    // --------------------------------------------------------
+
+    if (!resumeText.trim()) {
+      try {
+        console.log(
+          "pdf-parse returned no text. Trying PDF.js..."
+        );
+
+        resumeText =
+          await extractPdfTextWithPdfJs(
+            fileBuffer
+          );
+
+        console.log(
+          `PDF.js extraction completed. Characters: ${resumeText.length}`
+        );
+      } catch (error) {
+        console.error(
+          "PDF.js extraction failed:",
+          error
+        );
+      }
+    }
+
+    // --------------------------------------------------------
+    // STEP 3: OCR scanned/image PDF
+    // --------------------------------------------------------
+
+    if (!resumeText.trim()) {
+      try {
+        console.log(
+          "No PDF text found. Starting OCR..."
+        );
+
+        resumeText =
+          await extractPdfTextWithOcr(
+            fileBuffer
+          );
+
+        console.log(
+          `OCR extraction completed. Characters: ${resumeText.length}`
+        );
+      } catch (error) {
+        console.error(
+          "OCR extraction failed:",
+          error
+        );
+      }
     }
   }
 
+  // ==========================================================
   // DOCX
-  if (extension === ".docx") {
-    const result = await mammoth.extractRawText({
-      path: file.path,
-    });
+  // ==========================================================
 
-    resumeText = result.value || "";
+  if (extension === ".docx") {
+    try {
+      const result =
+        await mammoth.extractRawText({
+          path: file.path,
+        });
+
+      resumeText = result.value || "";
+    } catch (error) {
+      console.error(
+        "DOCX extraction failed:",
+        error
+      );
+    }
   }
+
+  // ----------------------------------------------------------
+  // Final extraction check
+  // ----------------------------------------------------------
 
   if (!resumeText.trim()) {
     throw ApiError.badRequest(
@@ -182,30 +373,39 @@ export async function uploadStudentResume(
     );
   }
 
+  console.log(
+    `Resume text extracted successfully. Characters: ${resumeText.length}`
+  );
+
   // ----------------------------------------------------------
   // Get student's existing manually entered skills
   // ----------------------------------------------------------
 
-  const student = await prisma.student.findUnique({
-    where: { id: studentId },
-    select: {
-      skills: true,
-    },
-  });
+  const student =
+    await prisma.student.findUnique({
+      where: { id: studentId },
+      select: {
+        skills: true,
+      },
+    });
 
   if (!student) {
-    throw ApiError.notFound("Student not found");
+    throw ApiError.notFound(
+      "Student not found"
+    );
   }
 
-  const existingSkills = Array.isArray(student.skills)
-    ? student.skills.filter(
-        (skill): skill is string =>
-          typeof skill === "string"
-      )
-    : [];
+  const existingSkills =
+    Array.isArray(student.skills)
+      ? student.skills.filter(
+          (skill): skill is string =>
+            typeof skill === "string"
+        )
+      : [];
 
   // ----------------------------------------------------------
-  // Send resume text + 162 predefined skills to AI service
+  // Send resume text + predefined skills
+  // to AI service
   // ----------------------------------------------------------
 
   let aiResponse: Response;
@@ -220,7 +420,9 @@ export async function uploadStudentResume(
         },
         body: JSON.stringify({
           resume_text: resumeText,
-          predefined_skills: [...PREDEFINED_SKILLS],
+          predefined_skills: [
+            ...PREDEFINED_SKILLS,
+          ],
         }),
       }
     );
@@ -240,7 +442,8 @@ export async function uploadStudentResume(
   // ----------------------------------------------------------
 
   if (!aiResponse.ok) {
-    const errorText = await aiResponse.text();
+    const errorText =
+      await aiResponse.text();
 
     console.error(
       "Resume skill extraction error:",
@@ -256,7 +459,8 @@ export async function uploadStudentResume(
   // Read AI response
   // ----------------------------------------------------------
 
-  const aiData: any = await aiResponse.json();
+  const aiData: any =
+    await aiResponse.json();
 
   if (!aiData.success) {
     throw new Error(
@@ -288,23 +492,36 @@ export async function uploadStudentResume(
   // ----------------------------------------------------------
 
   const mergedSkills: string[] = [];
-  const seenSkills = new Set<string>();
+
+  const seenSkills =
+    new Set<string>();
 
   for (const skill of [
     ...existingSkills,
     ...extractedSkills,
   ]) {
-    const cleanSkill = skill.trim();
+    const cleanSkill =
+      skill.trim();
 
     if (!cleanSkill) {
       continue;
     }
 
-    const normalizedSkill = cleanSkill.toLowerCase();
+    const normalizedSkill =
+      cleanSkill.toLowerCase();
 
-    if (!seenSkills.has(normalizedSkill)) {
-      seenSkills.add(normalizedSkill);
-      mergedSkills.push(cleanSkill);
+    if (
+      !seenSkills.has(
+        normalizedSkill
+      )
+    ) {
+      seenSkills.add(
+        normalizedSkill
+      );
+
+      mergedSkills.push(
+        cleanSkill
+      );
     }
   }
 
@@ -312,9 +529,10 @@ export async function uploadStudentResume(
   // Resume URL
   // ----------------------------------------------------------
 
-  const resumeUrl = `/uploads/resumes/${path.basename(
-    file.path
-  )}`;
+  const resumeUrl =
+    `/uploads/resumes/${path.basename(
+      file.path
+    )}`;
 
   // ----------------------------------------------------------
   // Save:
@@ -323,14 +541,17 @@ export async function uploadStudentResume(
   // 2. Manual + Resume Skills
   // ----------------------------------------------------------
 
-  const updatedStudent = await prisma.student.update({
-    where: { id: studentId },
-    data: {
-      resumeUrl,
-      skills: mergedSkills,
-    },
-    select: studentPublicSelect,
-  });
+  const updatedStudent =
+    await prisma.student.update({
+      where: { id: studentId },
+
+      data: {
+        resumeUrl,
+        skills: mergedSkills,
+      },
+
+      select: studentPublicSelect,
+    });
 
   // ----------------------------------------------------------
   // Return result
@@ -346,7 +567,8 @@ export async function uploadStudentResume(
     skills: mergedSkills,
 
     skillsSectionFound:
-      aiData.skills_section_found ?? false,
+      aiData.skills_section_found ??
+      false,
 
     matchedSkills:
       aiData.matched_skills ?? [],
