@@ -33,6 +33,7 @@ model Student {
   preferredLocation String?
   skills            Json?
   preferences       Json?
+  resumeUrl         String?
 
   applications Application[]
   feedback     Feedback[]
@@ -127,6 +128,6 @@ model Feedback {
 
   @@unique([studentId, internshipId])
   @@index([studentId])
-  @@index([internshipId])
   @@map("feedback")
 }
+
