@@ -5,7 +5,7 @@ import fs from "fs/promises";
 import path from "path";
 
 import { PDFParse } from "pdf-parse";
-import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.js";
+import { createWorker } from "tesseract.js";
 
 import mammoth from "mammoth";
 
@@ -118,40 +118,72 @@ export async function updateStudentPreferences(
 }
 
 // ============================================================
-// PDF TEXT EXTRACTION - PDF.JS
+// PDF OCR EXTRACTION - pdf-parse screenshot + Tesseract
+// ============================================================
+//
+// IMPORTANT:
+// We intentionally do NOT import pdfjs-dist directly here.
+// pdf-parse@2.4.5 already manages its compatible PDF.js
+// dependency. Using a second, separately pinned pdfjs-dist
+// version was causing the API/Worker mismatch seen in Render.
+//
+// pdf-parse v2 provides getScreenshot(), which lets us render
+// scanned/image PDFs and pass the PNG data to Tesseract.
 // ============================================================
 
-async function extractPdfTextWithPdfJs(
+async function extractPdfTextWithOcr(
   fileBuffer: Buffer
 ): Promise<string> {
-  const loadingTask = pdfjsLib.getDocument({
-    data: new Uint8Array(fileBuffer),
+  const parser = new PDFParse({
+    data: fileBuffer,
   });
 
-  const pdf = await loadingTask.promise;
+  const worker = await createWorker("eng");
 
   const pages: string[] = [];
 
   try {
-    for (
-      let pageNumber = 1;
-      pageNumber <= pdf.numPages;
-      pageNumber++
-    ) {
-      const page = await pdf.getPage(pageNumber);
+    const screenshotResult = await parser.getScreenshot({
+      scale: 1.5,
+      imageBuffer: true,
+      first: 5,
+    });
 
-      const content = await page.getTextContent();
+    console.log(
+      `OCR screenshot pages generated: ${screenshotResult.pages.length}`
+    );
 
-      const pageText = content.items
-        .map((item: any) => {
-          return "str" in item ? item.str : "";
-        })
-        .join(" ");
+    for (let index = 0; index < screenshotResult.pages.length; index++) {
+      const page = screenshotResult.pages[index];
 
-      pages.push(pageText);
+      if (!page?.data) {
+        console.warn(
+          `OCR skipped page ${index + 1}: no image data`
+        );
+        continue;
+      }
+
+      try {
+        const result = await worker.recognize(page.data);
+
+        const pageText =
+          result?.data?.text || "";
+
+        pages.push(pageText);
+
+        console.log(
+          `OCR page ${index + 1} characters: ${pageText.length}`
+        );
+      } catch (error) {
+        console.error(
+          `OCR failed for page ${index + 1}:`,
+          error
+        );
+      }
     }
   } finally {
-    await pdf.destroy();
+    await worker.terminate();
+    await parser.destroy();
   }
 
   return pages.join("\n");
@@ -207,7 +239,7 @@ export async function uploadStudentResume(
     );
 
     // --------------------------------------------------------
-    // STEP 1: Try pdf-parse
+    // STEP 1: Extract embedded/selectable text with pdf-parse
     // --------------------------------------------------------
 
     try {
@@ -218,10 +250,15 @@ export async function uploadStudentResume(
       try {
         const pdfData = await parser.getText();
 
-        resumeText = pdfData.text || "";
+        resumeText =
+          pdfData.text || "";
       } finally {
         await parser.destroy();
       }
+
+      console.log(
+        `pdf-parse text extraction completed. Characters: ${resumeText.length}`
+      );
     } catch (error) {
       console.error(
         "pdf-parse extraction failed:",
@@ -230,31 +267,37 @@ export async function uploadStudentResume(
     }
 
     // --------------------------------------------------------
-    // STEP 2: Try PDF.js
+    // STEP 2: OCR scanned/image PDF
+    //
+    // If selectable text is missing/too short, render the PDF
+    // through pdf-parse's own compatible PDF.js and OCR it.
     // --------------------------------------------------------
 
     if (resumeText.trim().length < 50) {
       try {
         console.log(
-          "pdf-parse text insufficient. Trying PDF.js..."
+          "PDF text insufficient. Starting OCR..."
         );
 
-        resumeText =
-          await extractPdfTextWithPdfJs(
+        const ocrText =
+          await extractPdfTextWithOcr(
             fileBuffer
           );
 
+        if (ocrText.trim().length > resumeText.trim().length) {
+          resumeText = ocrText;
+        }
+
         console.log(
-          `PDF.js extraction completed. Characters: ${resumeText.length}`
+          `OCR extraction completed. Characters: ${ocrText.length}`
         );
       } catch (error) {
         console.error(
-          "PDF.js extraction failed:",
+          "OCR extraction failed:",
           error
         );
       }
     }
-
   }
 
   // ==========================================================
@@ -289,6 +332,13 @@ export async function uploadStudentResume(
 
   console.log(
     `Resume text extracted successfully. Characters: ${resumeText.length}`
+  );
+
+  console.log(
+    "Resume extraction strategy:",
+    extension === ".pdf"
+      ? "pdf-parse text + OCR fallback"
+      : "DOCX raw text"
   );
 
   // ----------------------------------------------------------
