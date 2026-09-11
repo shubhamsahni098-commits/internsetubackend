@@ -6,8 +6,6 @@ import path from "path";
 
 import { PDFParse } from "pdf-parse";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.js";
-import { createCanvas } from "@napi-rs/canvas";
-import { createWorker } from "tesseract.js";
 
 import mammoth from "mammoth";
 
@@ -160,65 +158,6 @@ async function extractPdfTextWithPdfJs(
 }
 
 // ============================================================
-// PDF OCR EXTRACTION - TESSERACT
-// ============================================================
-
-async function extractPdfTextWithOcr(
-  fileBuffer: Buffer
-): Promise<string> {
-  const loadingTask = pdfjsLib.getDocument({
-    data: new Uint8Array(fileBuffer),
-  });
-
-  const pdf = await loadingTask.promise;
-
-  const worker = await createWorker("eng");
-
-  const pages: string[] = [];
-
-  try {
-    for (
-      let pageNumber = 1;
-      pageNumber <= pdf.numPages;
-      pageNumber++
-    ) {
-      const page = await pdf.getPage(pageNumber);
-
-      // Render PDF page as an image
-      // Higher scale improves OCR accuracy
-      const viewport = page.getViewport({
-        scale: 2,
-      });
-
-      const canvas = createCanvas(
-        Math.ceil(viewport.width),
-        Math.ceil(viewport.height)
-      );
-
-      const context = canvas.getContext("2d");
-
-      await page.render({
-        canvasContext: context as any,
-        viewport,
-      }).promise;
-
-      const imageBuffer = canvas.toBuffer("image/png");
-
-      const result = await worker.recognize(
-        imageBuffer
-      );
-
-      pages.push(result.data.text);
-    }
-  } finally {
-    await worker.terminate();
-    await pdf.destroy();
-  }
-
-  return pages.join("\n");
-}
-
-// ============================================================
 // Resume Upload + Skill Extraction
 // ============================================================
 
@@ -315,33 +254,6 @@ export async function uploadStudentResume(
         );
       }
     }
-
-    // --------------------------------------------------------
-    // STEP 3: OCR scanned/image PDF
-    // --------------------------------------------------------
-
-    if (resumeText.trim().length < 50) {
-      try {
-        console.log(
-          "PDF text insufficient. Starting OCR..."
-        );
-
-        resumeText =
-          await extractPdfTextWithOcr(
-            fileBuffer
-          );
-
-        console.log(
-          `OCR extraction completed. Characters: ${resumeText.length}`
-        );
-      } catch (error) {
-        console.error(
-          "OCR extraction failed:",
-          error
-        );
-      }
-    }
-  }
 
   // ==========================================================
   // DOCX
