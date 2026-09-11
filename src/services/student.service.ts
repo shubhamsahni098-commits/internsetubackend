@@ -254,6 +254,7 @@ export async function uploadStudentResume(
         );
       }
     }
+
   }
 
   // ==========================================================
@@ -289,6 +290,17 @@ export async function uploadStudentResume(
   console.log(
     `Resume text extracted successfully. Characters: ${resumeText.length}`
   );
+
+  // ----------------------------------------------------------
+  // DEBUG: Verify what the PDF/DOCX parser extracted
+  // ----------------------------------------------------------
+  console.log("========== RESUME TEXT DEBUG ==========");
+  console.log("Resume characters:", resumeText.length);
+  console.log(
+    "Resume text preview:",
+    resumeText.substring(0, 3000)
+  );
+  console.log("========================================");
 
   // ----------------------------------------------------------
   // Get student's existing manually entered skills
@@ -375,6 +387,16 @@ export async function uploadStudentResume(
   const aiData: any =
     await aiResponse.json();
 
+  console.log("========== AI SKILL RESPONSE DEBUG ==========");
+  console.log("AI success:", aiData?.success);
+  console.log("AI skills:", aiData?.skills);
+  console.log("AI matched_skills:", aiData?.matched_skills);
+  console.log(
+    "AI skills_section_found:",
+    aiData?.skills_section_found
+  );
+  console.log("==============================================");
+
   if (!aiData.success) {
     throw new Error(
       aiData.message ||
@@ -394,8 +416,6 @@ export async function uploadStudentResume(
         )
       : [];
 
-  // Some versions of the recommendation service return the
-  // canonical skills inside matched_skills instead of skills.
   const aiMatchedSkills: string[] =
     Array.isArray(aiData.matched_skills)
       ? aiData.matched_skills.filter(
@@ -407,12 +427,9 @@ export async function uploadStudentResume(
   // ----------------------------------------------------------
   // FALLBACK SKILL EXTRACTION
   //
-  // Do not depend only on the "Skills" heading. A resume may use:
-  // "Technical Skills", "Skills & Tools", "Core Competencies",
-  // or may mention technologies throughout Projects/Experience.
-  //
-  // We therefore match the full extracted resume text against the
-  // same canonical PREDEFINED_SKILLS list used by the frontend.
+  // If the AI returns no skills, scan the complete extracted
+  // resume text against the canonical predefined skill list.
+  // This does not require a "Skills" heading.
   // ----------------------------------------------------------
 
   const normalizeText = (value: string) =>
@@ -483,20 +500,18 @@ export async function uploadStudentResume(
 
     if (!normalizedCandidate) return false;
 
-    // Short/ambiguous skills need stricter matching.
     if (normalizedCandidate === "c") {
       return /\bc\s*(programming|language)\b/i.test(source);
-    }
-
-    if (normalizedCandidate === "ai") {
-      return /\bai\b/i.test(source);
     }
 
     const escaped = normalizedCandidate
       .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
       .replace(/\s+/g, "\\s+");
 
-    return new RegExp(`(?:^|\\s)${escaped}(?=\\s|$)`, "i").test(source);
+    return new RegExp(
+      `(?:^|\\s)${escaped}(?=\\s|$)`,
+      "i"
+    ).test(source);
   };
 
   const fallbackSkills: string[] = [];
@@ -516,8 +531,6 @@ export async function uploadStudentResume(
     }
   }
 
-  // Prefer AI results, but never return an empty list when the resume
-  // clearly contains skills from the predefined dataset.
   const extractedSkills: string[] = [];
   const seenExtracted = new Set<string>();
 
@@ -542,10 +555,12 @@ export async function uploadStudentResume(
     aiData.skills_section_found === true ||
     extractedSkills.length > 0;
 
+  console.log("========== FINAL SKILL EXTRACTION DEBUG ==========");
   console.log("AI extracted skills:", aiExtractedSkills);
   console.log("AI matched skills:", aiMatchedSkills);
   console.log("Fallback matched skills:", fallbackSkills);
   console.log("Final extracted skills:", extractedSkills);
+  console.log("===================================================");
 
   // ----------------------------------------------------------
   // Merge:
